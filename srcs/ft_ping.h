@@ -20,7 +20,7 @@ typedef struct options
 	int packet_size; // -s
 	int ttl; // --ttl
 	int verbose; // -v
-	int timeout_ping; // -w
+	int timeout_ping_dead; // -w
 	int print_only_ip; // -n
 } t_options;
 
@@ -35,5 +35,7 @@ void parse_args(int ac, char **av, t_options *options);
 t_options *init_options();
 void print_error(char *error);
 double sqrt(double x);
+int	is_ipv4(char *ip);
+void parse_fdqn(char **dest_addr);
 
 #endif

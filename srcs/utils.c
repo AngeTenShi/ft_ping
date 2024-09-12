@@ -108,11 +108,11 @@ void parse_args(int ac, char **av, t_options *options)
 					free(options);
 					exit(1);
 				}
-				options->timeout_ping = atoi(av[i + 1]);
-				if (options->timeout_ping < 0 || options->timeout_ping > 2147483647)
+				options->timeout_ping_dead = atoi(av[i + 1]);
+				if (options->timeout_ping_dead < 0 || options->timeout_ping_dead > 2147483647)
 				{
 					char *error = malloc(100);
-					if (av[i + 1][0] != '0' && options->timeout_ping == 0)
+					if (av[i + 1][0] != '0' && options->timeout_ping_dead == 0)
 						sprintf(error, "invalid argument: '%s'", av[i + 1]);
 					else
 						sprintf(error, "invalid argument: '%s': out of range: 0 <= value <= 2147483647", av[i + 1]);
@@ -144,7 +144,7 @@ t_options *init_options()
 	options->packet_size = 56; // 64 with ICMP header
 	options->ttl = 63;
 	options->verbose = 0;
-	options->timeout_ping = 0;
+	options->timeout_ping_dead = 0;
 	options->print_only_ip = 0;
 	return (options);
 }
@@ -161,4 +161,36 @@ double sqrt(double x)
 	for (int i = 0; i < 10; i++)
 		z -= (z * z - x) / (2 * z);
 	return z;
+}
+
+void parse_fdqn(char **dest_addr)
+{
+	// parse fully qualified domain name
+	// if it is a FQDN, remove the domain part https://www.google.com -> google.com https:://google.com -> google.com www.google.com -> google.com
+	int i = 0;
+	char *str = *dest_addr;
+	if (strlen(str) < 4)
+		return;
+	if (str[0] == 'w' && str[1] == 'w' && str[2] == 'w' && str[3] == '.')
+		i = 4;
+	else if (str[i] == 'h' && str[i + 1] == 't' && str[i + 2] == 't' && str[i + 3] == 'p' && str[i + 4] == 's' && str[i + 5] == ':' && str[i + 6] == '/' && str[i + 7] == '/')
+	{
+		if (strlen(str) < 8)
+			return;
+		if (str[i + 8] == 'w' && str[i + 9] == 'w' && str[i + 10] == 'w' && str[i + 11] == '.')
+			i += 12;
+		else
+			i += 8;
+	}
+	else if (str[i] == 'h' && str[i + 1] == 't' && str[i + 2] == 't' && str[i + 3] == 'p' && str[i + 4] == ':' && str[i + 5] == '/' && str[i + 6] == '/')
+	{
+		if (strlen(str) < 7)
+			return;
+		if (str[i + 7] == 'w' && str[i + 8] == 'w' && str[i + 9] == 'w' && str[i + 10] == '.')
+			i += 11;
+		else
+			i += 7;
+	}
+	*dest_addr = *dest_addr + i;
+
 }
