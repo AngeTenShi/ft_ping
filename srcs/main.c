@@ -42,7 +42,6 @@ char *dns_lookup(char *addr, struct sockaddr_in *addr_con)
 {
 	// get the ip address of the host from the hostname with getaddrinfo
 	struct addrinfo hints = {0}, *res = NULL;
-	struct in_addr addr4 = {0};
 	int ret = 0;
 	char ip[INET_ADDRSTRLEN];
 	memset(&hints, 0, sizeof(hints));
@@ -56,7 +55,6 @@ char *dns_lookup(char *addr, struct sockaddr_in *addr_con)
 	struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
 	void *address = &(ipv4->sin_addr);
 	inet_ntop(p->ai_family, address, ip, sizeof(ip));
-	addr4.s_addr = ipv4->sin_addr.s_addr;
 	ret_buf = (char *)malloc((strlen(ip) + 1) * sizeof(char));
 	strcpy(ret_buf, ip);
 	memcpy(addr_con, ipv4, sizeof(struct sockaddr_in));
