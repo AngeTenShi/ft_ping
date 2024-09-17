@@ -131,7 +131,11 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *orig_host, char
 		if (recvfrom(socket_fd, packet, opts->packet_size, 0, (struct sockaddr *)&r_addr, (socklen_t *)&addr_len) <= 0)
 		{
 			if (!do_ping)
+			{
+				if (packet)
+					free(packet);
 				break;
+			}
 		}
 		else
 		{
@@ -145,7 +149,11 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *orig_host, char
 				min_rtt = rtt_msec;
 			avg_rtt += rtt_msec;
 			if (!do_ping || (opts->nb_packets == msg_received_count && opts->nb_packets != -1))
+			{
+				if (packet)
+					free(packet);
 				break;
+			}
 			if (sent)
 			{
 				if (opts->print_only_ip == 0)
@@ -167,6 +175,7 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *orig_host, char
 			usleep(1000000);
 		}
 		free(packet);
+		packet = NULL;
 	}
 	clock_gettime(CLOCK_MONOTONIC, &g_end);
 	double time_taken = (double)(g_end.tv_nsec - g_start.tv_nsec) / 1000000.0;
@@ -232,7 +241,8 @@ int main(int ac, char **av)
 	ft_ping(socket_fd, &addr_con, orig_host, hostname, ip_addr, options);
 	free(options);
 	close(socket_fd);
-	free(hostname);
+	if (hostname != ip_addr)
+		free(hostname);
 	free(ip_addr);
 	return (0);
 }
