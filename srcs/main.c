@@ -38,35 +38,46 @@ char *reverse_dns_lookup(char *ip)
 	return (ret_buf);
 }
 
-char *dns_lookup(char *addr_host, struct sockaddr_in *addr_con) {
-    struct hostent *host_entity;
-    char *ip = (char *)malloc(NI_MAXHOST * sizeof(char));
-
-    if ((host_entity = gethostbyname(addr_host)) == NULL) {
-        return (NULL);
-    }
-    strcpy(ip, inet_ntoa(*(struct in_addr *)host_entity->h_addr)); // Convert IP into string
-    (*addr_con).sin_family = host_entity->h_addrtype;
-    (*addr_con).sin_port = htons(0);
-    (*addr_con).sin_addr.s_addr = *(long *)host_entity->h_addr; // Copy IP address from DNS to addr_con
-
-    return ip;
+char *dns_lookup(char *addr, struct sockaddr_in *addr_con)
+{
+	// get the ip address of the host from the hostname with getaddrinfo
+	struct addrinfo hints = {0}, *res = NULL;
+	struct in_addr addr4 = {0};
+	int ret = 0;
+	char ip[INET_ADDRSTRLEN];
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+	ret = getaddrinfo(addr, NULL, &hints, &res);
+	if (ret != 0)
+		return (NULL);
+	char *ret_buf = NULL;
+	struct addrinfo *p = res;
+	struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
+	void *address = &(ipv4->sin_addr);
+	inet_ntop(p->ai_family, address, ip, sizeof(ip));
+	addr4.s_addr = ipv4->sin_addr.s_addr;
+	ret_buf = (char *)malloc((strlen(ip) + 1) * sizeof(char));
+	strcpy(ret_buf, ip);
+	memcpy(addr_con, ipv4, sizeof(struct sockaddr_in));
+	freeaddrinfo(res);
+	return (ret_buf);
 }
 
 char *create_packet(int sequence_number, int packet_size)
 {
 	char *packet;
-	struct icmp *icmp;
+	struct icmphdr *icmp;
 	packet = (char *)malloc(packet_size);
-	icmp = (struct icmp *)packet;
-	icmp->icmp_type = ICMP_ECHO;
-	icmp->icmp_code = 0;
-	icmp->icmp_cksum = 0;
-	icmp->icmp_seq = sequence_number;
-	icmp->icmp_id = getpid();
-	memset(icmp->icmp_data, 0, packet_size);
-	icmp->icmp_cksum = checksum((unsigned short *)packet, packet_size);
-	return (packet);
+	icmp = (struct icmphdr *)packet;
+	icmp->type = ICMP_ECHO;
+	icmp->code = 0;
+	icmp->checksum = 0;
+	icmp->un.echo.sequence = sequence_number;
+	icmp->un.echo.id = getpid();
+	memset(packet + sizeof(struct icmphdr), 0, packet_size - sizeof(struct icmphdr));
+	icmp->checksum = checksum((unsigned short *)packet, packet_size);
+	return packet;
 }
 
 void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *orig_host, char *dest_host, char *dest_ip, t_options *opts)
@@ -114,8 +125,8 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *orig_host, char
 		sent = 1;
 		msg_count++;
 		packet = create_packet(msg_count, opts->packet_size);
-		struct icmp *icmp = (struct icmp *)packet;
-		int packet_id = icmp->icmp_id;
+		struct icmphdr *icmp = (struct icmphdr *)packet;
+		int packet_id = icmp->un.echo.id;
 		clock_gettime(CLOCK_MONOTONIC, &time_start);
 		if (sendto(socket_fd, packet, opts->packet_size, 0, (struct sockaddr *)ping_addr, sizeof(*ping_addr)) <= 0)
 			sent = 0;
@@ -177,7 +188,7 @@ int main(int ac, char **av)
 	t_options *options;
 	char *dest_addr;
 	struct sockaddr_in addr_con;
-	char *ip_addr;
+	char *ip_addr = NULL;
 	char *hostname;
 	char *orig_host;
 	int socket_fd;
@@ -209,10 +220,20 @@ int main(int ac, char **av)
 		else
 			hostname = dest_addr;
 	}
+	if (getuid() != 0)
+	{
+		print_error("You must be root to use ping");
+		free(options);
+		free(hostname);
+		free(ip_addr);
+		return (1);
+	}
 	socket_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
 	signal(SIGINT, interrupt_handler);
 	ft_ping(socket_fd, &addr_con, orig_host, hostname, ip_addr, options);
-	free(ip_addr);
 	free(options);
+	close(socket_fd);
+	free(hostname);
+	free(ip_addr);
 	return (0);
 }

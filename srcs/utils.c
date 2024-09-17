@@ -152,7 +152,6 @@ t_options *init_options()
 void print_error(char *msg)
 {
 	printf("ping: %s\n", msg);
-	exit(1);
 }
 
 double sqrt(double x)
