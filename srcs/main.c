@@ -200,14 +200,24 @@ int main(int ac, char **av)
 	dest_addr = av[ac - 1];
 	parse_fdqn(&dest_addr); // remove http:// or https:// or www. from the address
 	orig_host = dest_addr;
+	if (getuid() != 0)
+	{
+		print_error("You must be root to use ping");
+		free(options);
+		return (1);
+	}
+	socket_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
 	ip_addr = dns_lookup(dest_addr, &addr_con);
 	if (ip_addr == NULL)
 	{
+		if (options->verbose)
+			printf("ping : sock4.fd= %d (socktype : SOCK_RAW), hints.ai_family: AF_INET (not UNSPEC because only IPV4)\n\n", socket_fd);
 		char *error = malloc(100 + strlen(dest_addr));
 		sprintf(error, "%s: Name or service not known", dest_addr);
 		print_error(error);
 		free(error);
 		free(options);
+		close(socket_fd);
 		return (1);
 	}
 	hostname = reverse_dns_lookup(ip_addr);
@@ -218,15 +228,6 @@ int main(int ac, char **av)
 		else
 			hostname = dest_addr;
 	}
-	if (getuid() != 0)
-	{
-		print_error("You must be root to use ping");
-		free(options);
-		free(hostname);
-		free(ip_addr);
-		return (1);
-	}
-	socket_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
 	signal(SIGINT, interrupt_handler);
 	ft_ping(socket_fd, &addr_con, orig_host, hostname, ip_addr, options);
 	free(options);
