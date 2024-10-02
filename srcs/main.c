@@ -66,19 +66,33 @@ char *create_packet(int sequence_number, int packet_size)
 {
 	char *packet;
 	struct icmphdr *icmp;
-	packet = (char *)malloc(packet_size);
+	packet = (char *)malloc(packet_size + sizeof(struct icmphdr));
 	icmp = (struct icmphdr *)packet;
 	icmp->type = ICMP_ECHO;
 	icmp->code = 0;
 	icmp->checksum = 0;
 	icmp->un.echo.sequence = sequence_number;
 	icmp->un.echo.id = getpid();
-	memset(packet + sizeof(struct icmphdr), 0, packet_size - sizeof(struct icmphdr));
-	icmp->checksum = checksum((unsigned short *)packet, packet_size);
-	return packet;
+	memset(packet + sizeof(struct icmphdr), 0, packet_size);
+	icmp->checksum = checksum((unsigned short *)packet, packet_size + sizeof(struct icmphdr));
+	return (packet);
 }
 
-void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *orig_host, char *dest_host, char *dest_ip, t_options *opts)
+void calculate_metrics(struct timespec time_start, double *sum_rtt_squared, double *avg_rtt, double *max_rtt, double *min_rtt, long double *rtt_msec)
+{
+	struct timespec time_end;
+	clock_gettime(CLOCK_MONOTONIC, &time_end);
+	double time_diff = (double)(time_end.tv_nsec - time_start.tv_nsec) / 1000000.0;
+	*rtt_msec = (time_end.tv_sec - time_start.tv_sec) * 1000.0 + (time_diff);
+	*sum_rtt_squared += *rtt_msec * *rtt_msec;
+	if (*rtt_msec > *max_rtt)
+		*max_rtt = *rtt_msec;
+	if (*rtt_msec < *min_rtt || *min_rtt == 0)
+		*min_rtt = *rtt_msec;
+	*avg_rtt += *rtt_msec;
+}
+
+void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *dest_addr, t_options *opts)
 {
 	int ttl;
 	long double msg_count = 0;
@@ -86,7 +100,7 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *orig_host, char
 	struct sockaddr_in r_addr;
 	char *packet;
 	struct timeval tv_out;
-	struct timespec time_start, time_end, g_start, g_end;
+	struct timespec time_start, g_start, g_end;
 	double min_rtt = 0;
 	double max_rtt = 0;
 	double avg_rtt = 0;
@@ -94,7 +108,7 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *orig_host, char
 	tv_out.tv_sec = 1;
 	tv_out.tv_usec = 0;
 	ttl = opts->ttl;
-	int sent;
+	int sent = 0;
 	if (setsockopt(socket_fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) != 0)
 	{
 		print_error("Setting socket options to TTL failed");
@@ -105,13 +119,18 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *orig_host, char
 		print_error("Setting socket options to timeout failed");
 		return;
 	}
-	addr_len = sizeof(r_addr);
-	if (opts->verbose)
+	char *dest_ip = dns_lookup(dest_addr, ping_addr);
+	if (dest_ip == NULL)
 	{
-		printf("ping : sock4.fd= %d (socktype : SOCK_RAW), hints.ai_family: AF_INET (not UNSPEC because only IPV4)\n\n", socket_fd);
-		printf("ai->ai_family: AF_INET, ai->ai_canonname: '%s'\n", orig_host);
+		print_error("unknown host");
+		return ;
 	}
-	printf("PING %s (%s) %d(%d) bytes of data.\n", orig_host, dest_ip, opts->packet_size, opts->packet_size + 8 + 20); // 8 bytes ICMP header and 20 bytes IP header
+	addr_len = sizeof(r_addr);
+	printf("PING %s (%s): %d data bytes", dest_addr, dest_ip, opts->packet_size);
+	if (opts->verbose)
+		printf(", id %x = %d\n", getpid(), getpid());
+	else
+		printf("\n");
 	if (opts->timeout_ping_dead != 0)
 	{
 		alarm(opts->timeout_ping_dead);
@@ -122,13 +141,12 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *orig_host, char
 	{
 		sent = 1;
 		msg_count++;
-		packet = create_packet(msg_count, opts->packet_size);
-		struct icmphdr *icmp = (struct icmphdr *)packet;
-		int packet_id = icmp->un.echo.id;
+		packet = create_packet(msg_count - 1, opts->packet_size);
 		clock_gettime(CLOCK_MONOTONIC, &time_start);
-		if (sendto(socket_fd, packet, opts->packet_size, 0, (struct sockaddr *)ping_addr, sizeof(*ping_addr)) <= 0)
+		if (sendto(socket_fd, packet, opts->packet_size + sizeof(struct icmphdr*), 0, (struct sockaddr *)ping_addr, sizeof(*ping_addr)) <= 0)
 			sent = 0;
-		if (recvfrom(socket_fd, packet, opts->packet_size, 0, (struct sockaddr *)&r_addr, (socklen_t *)&addr_len) <= 0)
+		char *recv_packet = (char *)malloc(0x10000);
+		if (recvfrom(socket_fd, recv_packet, 0x10000, 0, (struct sockaddr *)&r_addr, (socklen_t *)&addr_len) <= 0)
 		{
 			if (!do_ping)
 			{
@@ -139,54 +157,95 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *orig_host, char
 		}
 		else
 		{
-			clock_gettime(CLOCK_MONOTONIC, &time_end);
-			double time_diff = (double)(time_end.tv_nsec - time_start.tv_nsec) / 1000000.0;
-			long double rtt_msec = (time_end.tv_sec - time_start.tv_sec) * 1000.0 + (time_diff);
-			sum_rtt_squared += rtt_msec * rtt_msec;
-			if (rtt_msec > max_rtt)
-				max_rtt = rtt_msec;
-			if (rtt_msec < min_rtt || min_rtt == 0)
-				min_rtt = rtt_msec;
-			avg_rtt += rtt_msec;
+			struct iphdr *ip = (struct iphdr *)recv_packet;
+			struct icmphdr *icmp = (struct icmphdr *)(recv_packet + (ip->ihl << 2));
+			ttl = ip->ttl;
 			if (!do_ping || (opts->nb_packets == msg_received_count && opts->nb_packets != -1))
 			{
 				if (packet)
 					free(packet);
+				if (recv_packet)
+					free(recv_packet);
 				break;
 			}
 			if (sent)
 			{
-				if (opts->print_only_ip == 0)
+				struct icmphdr *icmp_from = (struct icmphdr *)(packet);
+				int packet_from_id = icmp_from->un.echo.id;
+				char *recv_ip = dns_lookup(inet_ntoa(r_addr.sin_addr), &r_addr);
+				if (recv_ip == NULL)
+					recv_ip = inet_ntoa(r_addr.sin_addr);
+				char *recv_hostname = reverse_dns_lookup(recv_ip);
+				if (recv_hostname == NULL)
+					recv_hostname = recv_ip;
+				long double rtt_msec = 0;
+				calculate_metrics(time_start, &sum_rtt_squared, &avg_rtt, &max_rtt, &min_rtt, &rtt_msec);
+				if (icmp->type == ICMP_ECHOREPLY && icmp->un.echo.id == packet_from_id)
 				{
-					if (opts->verbose)
-						printf("%d bytes from %s (%s): icmp_seq=%d ident=%d ttl=%d time=%.1Lf ms\n", opts->packet_size + 8, dest_host, dest_ip, (int)msg_count, packet_id, ttl, rtt_msec);
+					if (opts->print_only_ip == 0)
+						printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.3Lf ms\n", opts->packet_size + 8, recv_hostname, recv_ip, (int)(msg_count - 1), ttl, rtt_msec);
 					else
-						printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.1Lf ms\n", opts->packet_size + 8, dest_host, dest_ip, (int)msg_count, ttl, rtt_msec);
+						printf("%d bytes from %s: icmp_seq=%d ttl=%d time=%.3Lf ms\n", opts->packet_size + 8, recv_ip, (int)(msg_count - 1), ttl, rtt_msec);
+					msg_received_count++;
+				}
+				else if (icmp->type == ICMP_DEST_UNREACH)
+				{
+					if (opts->print_only_ip == 0)
+						printf("From %s icmp_seq=%d Destination Host Unreachable\n", recv_hostname, (int)(msg_count - 1));
+					else
+						printf("From %s icmp_seq=%d Destination Host Unreachable\n", recv_ip, (int)(msg_count - 1));
+					if (opts->verbose)
+					{
+						// dump the packet
+					}
+				}
+				else if (icmp->type == ICMP_TIME_EXCEEDED)
+				{
+					if (opts->print_only_ip == 0)
+						printf("From %s icmp_seq=%d Time to live exceeded\n", recv_hostname, (int)(msg_count - 1));
+					else
+						printf("From %s icmp_seq=%d Time to live exceeded\n", recv_ip, (int)(msg_count - 1));
+				}
+				else if (icmp->type == NR_ICMP_UNREACH)
+				{
+					if (opts->print_only_ip == 0)
+						printf("From %s icmp_seq=%d Network Unreachable\n", recv_hostname, (int)(msg_count - 1));
+					else
+						printf("From %s icmp_seq=%d Network Unreachable\n", recv_ip, (int)(msg_count - 1));
 				}
 				else
 				{
-					if (opts->verbose)
-						printf("%d bytes from %s: icmp_seq=%d ident=%d ttl=%d time=%.1Lf ms\n", opts->packet_size + 8, dest_ip, (int)msg_count, packet_id, ttl, rtt_msec);
-					else
-						printf("%d bytes from %s: icmp_seq=%d ttl=%d time=%.1Lf ms\n", opts->packet_size + 8, dest_ip, (int)msg_count, ttl, rtt_msec);
+					if (icmp->un.echo.id != icmp_from->un.echo.id || icmp->un.echo.sequence != icmp_from->un.echo.sequence)
+					{
+						free(packet);
+						free(recv_packet);
+						msg_count--;
+						continue;
+					}
 				}
+				if (recv_ip)
+					free(recv_ip);
+				if (recv_hostname != recv_ip)
+					free(recv_hostname);
 			}
-			msg_received_count++;
 			usleep(1000000);
 		}
 		free(packet);
+		free(recv_packet);
 		packet = NULL;
+		recv_packet = NULL;
 	}
+	free(dest_ip);
 	clock_gettime(CLOCK_MONOTONIC, &g_end);
 	double time_taken = (double)(g_end.tv_nsec - g_start.tv_nsec) / 1000000.0;
 	long double total_msec = (g_end.tv_sec - g_start.tv_sec) * 1000.0 + (time_taken);
-	printf("\n--- %s ping statistics ---\n", orig_host);
+	printf("\n--- %s ping statistics ---\n", dest_addr);
 	printf("%d packets transmitted, %d received, %d%% packet loss, time %d ms\n", (int)msg_count, msg_received_count, (int)(((msg_count - msg_received_count) / msg_count) * 100.0), (int)total_msec);
 	if (msg_received_count > 0)
 	{
 		avg_rtt /= msg_count;
 		double mdev = sqrt((sum_rtt_squared / msg_received_count) - (avg_rtt * avg_rtt)); // sqrt of variance
-		printf("rtt min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n", min_rtt, avg_rtt, max_rtt, mdev);
+		printf("rtt min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n", min_rtt, avg_rtt, max_rtt, mdev);
 	}
 }
 
@@ -195,9 +254,6 @@ int main(int ac, char **av)
 	t_options *options;
 	char *dest_addr;
 	struct sockaddr_in addr_con;
-	char *ip_addr = NULL;
-	char *hostname;
-	char *orig_host;
 	int socket_fd;
 	if (ac < 2)
 	{
@@ -207,42 +263,16 @@ int main(int ac, char **av)
 	options = init_options();
 	parse_args(ac, av, options);
 	dest_addr = av[ac - 1];
-	parse_fdqn(&dest_addr); // remove http:// or https:// or www. from the address
-	orig_host = dest_addr;
-	if (getuid() != 0)
-	{
-		print_error("You must be root to use ping");
-		free(options);
-		return (1);
-	}
 	socket_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-	ip_addr = dns_lookup(dest_addr, &addr_con);
-	if (ip_addr == NULL)
+	if (socket_fd < 0)
 	{
-		if (options->verbose)
-			printf("ping : sock4.fd= %d (socktype : SOCK_RAW), hints.ai_family: AF_INET (not UNSPEC because only IPV4)\n\n", socket_fd);
-		char *error = malloc(100 + strlen(dest_addr));
-		sprintf(error, "%s: Name or service not known", dest_addr);
-		print_error(error);
-		free(error);
+		print_error("Lack of privileges must run as root");
 		free(options);
-		close(socket_fd);
 		return (1);
-	}
-	hostname = reverse_dns_lookup(ip_addr);
-	if (hostname == NULL)
-	{
-		if (strncmp(ip_addr, dest_addr, strlen(dest_addr)) == 0)
-			hostname = ip_addr;
-		else
-			hostname = dest_addr;
 	}
 	signal(SIGINT, interrupt_handler);
-	ft_ping(socket_fd, &addr_con, orig_host, hostname, ip_addr, options);
+	ft_ping(socket_fd, &addr_con, dest_addr, options);
 	free(options);
 	close(socket_fd);
-	if (hostname != ip_addr)
-		free(hostname);
-	free(ip_addr);
 	return (0);
 }

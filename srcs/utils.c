@@ -142,7 +142,7 @@ t_options *init_options()
 	options = malloc(sizeof(t_options));
 	options->nb_packets = -1;
 	options->packet_size = 56; // 64 with ICMP header
-	options->ttl = 63;
+	options->ttl = 64;
 	options->verbose = 0;
 	options->timeout_ping_dead = 0;
 	options->print_only_ip = 0;
