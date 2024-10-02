@@ -92,7 +92,7 @@ void calculate_metrics(struct timespec time_start, double *sum_rtt_squared, doub
 	*avg_rtt += *rtt_msec;
 }
 
-void print_dump_packet(char *recv_packet, char *packet)
+void print_dump_packet(char *recv_packet)
 {
 	// Cast the packet to an IP header structure
 	const struct iphdr *ip = (struct iphdr *)recv_packet;
@@ -114,18 +114,16 @@ void print_dump_packet(char *recv_packet, char *packet)
 	printf("  %02x  %02x %04x", ip->ttl, ip->protocol, ntohs(ip->check));
 	printf(" %s ", inet_ntoa(*((struct in_addr *)&ip->saddr)));
 	printf(" %s ", inet_ntoa(*((struct in_addr *)&ip->daddr)));
-
 	// Print the remaining header bytes in hexadecimal format
 	while (hlen-- > sizeof(struct iphdr))
 		printf("%02x", *cp++);
 	printf("\n");
 
-	// ICMP INFOS
-	printf("ICMP : ");
-	struct icmphdr *icmp = (struct icmphdr *)(packet);
-	printf("type %d, code %d, size %d, id 0x%x, seq 0x%04x\n", icmp->type, icmp->code, ntohs(ip->tot_len) - (ip->ihl << 2) - 20 - 8, icmp->un.echo.id, icmp->un.echo.sequence);
-
-	printf("\n");
+	const struct icmphdr *icmp = (const struct icmphdr *)(recv_packet + sizeof(struct ip));
+    printf("ICMP: type %d, code %d, size %lu, id 0x%x, seq 0x%04x\n",
+           icmp->type, icmp->code,
+           ntohs(ip->tot_len) - hlen - sizeof(struct icmphdr),
+           ntohs(icmp->un.echo.id), ntohs(icmp->un.echo.sequence));
 }
 
 void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *dest_addr, t_options *opts)
@@ -181,7 +179,6 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *dest_addr, t_op
 		clock_gettime(CLOCK_MONOTONIC, &time_start);
 		if (sendto(socket_fd, packet, opts->packet_size + sizeof(struct icmphdr), 0, (struct sockaddr *)ping_addr, sizeof(*ping_addr)) <= 0)
 			sent = 0;
-
 		fd_set read_fds;
 		struct timeval timeout;
 		FD_ZERO(&read_fds);
@@ -194,6 +191,7 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *dest_addr, t_op
 		{
 			char *recv_packet = (char *)malloc(0x10000);
 			size_t bytes_received = recvfrom(socket_fd, recv_packet, 0x10000, 0, (struct sockaddr *)&r_addr, (socklen_t *)&addr_len);
+			recv_packet[bytes_received] = 0;
 			if (bytes_received > 0)
 			{
 				struct iphdr *ip = (struct iphdr *)recv_packet;
@@ -235,7 +233,7 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *dest_addr, t_op
 						else
 							printf("%d bytes from %s: Destination Host Unreachable\n", size, recv_ip);
 						if (opts->verbose)
-							print_dump_packet(recv_packet, packet);
+							print_dump_packet(recv_packet);
 					}
 					else if (icmp->type == ICMP_TIME_EXCEEDED)
 					{
