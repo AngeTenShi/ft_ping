@@ -73,7 +73,7 @@ char *create_packet(int sequence_number, int packet_size)
 	icmp->checksum = 0;
 	icmp->un.echo.sequence = sequence_number;
 	icmp->un.echo.id = getpid();
-	memset(packet + sizeof(struct icmphdr), 0, packet_size);
+	memset(packet + sizeof(struct icmphdr), 1, packet_size);
 	icmp->checksum = checksum((unsigned short *)packet, packet_size + sizeof(struct icmphdr));
 	return (packet);
 }
@@ -92,11 +92,47 @@ void calculate_metrics(struct timespec time_start, double *sum_rtt_squared, doub
 	*avg_rtt += *rtt_msec;
 }
 
+void print_dump_packet(char *recv_packet, char *packet)
+{
+	// Cast the packet to an IP header structure
+	const struct iphdr *ip = (struct iphdr *)recv_packet;
+	// Calculate the header length in bytes
+	size_t hlen = ip->ihl << 2;
+	// Pointer to the start of the IP payload
+	const uint8_t *cp = (uint8_t *)ip + hlen;
+
+	// Print the IP header in hexadecimal format
+	printf("IP Hdr Dump:\n");
+	for (int i = 0; i < 10; i++)
+		printf(" %04x", ((uint16_t *)ip)[i]);
+	printf("\nVr HL TOS  Len   ID Flg  off TTL Pro  cks      Src\tDst\tData\n");
+
+	// Print the IP header fields in a human-readable format
+	printf(" %1x  %1x  %02x", ip->version, ip->ihl, ip->tos);
+	printf(" %04x %04x", (ip->tot_len > 0x2000) ? ntohs(ip->tot_len) : ip->tot_len, ntohs(ip->id));
+	printf("   %1x %04x", (ntohs(ip->frag_off) & 0xe000) >> 13, ntohs(ip->frag_off) & 0x1fff);
+	printf("  %02x  %02x %04x", ip->ttl, ip->protocol, ntohs(ip->check));
+	printf(" %s ", inet_ntoa(*((struct in_addr *)&ip->saddr)));
+	printf(" %s ", inet_ntoa(*((struct in_addr *)&ip->daddr)));
+
+	// Print the remaining header bytes in hexadecimal format
+	while (hlen-- > sizeof(struct iphdr))
+		printf("%02x", *cp++);
+	printf("\n");
+
+	// ICMP INFOS
+	printf("ICMP : ");
+	struct icmphdr *icmp = (struct icmphdr *)(packet);
+	printf("type %d, code %d, size %d, id 0x%x, seq 0x%04x\n", icmp->type, icmp->code, ntohs(ip->tot_len) - (ip->ihl << 2) - 20 - 8, icmp->un.echo.id, icmp->un.echo.sequence);
+
+	printf("\n");
+}
+
 void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *dest_addr, t_options *opts)
 {
 	int ttl;
 	long double msg_count = 0;
-	int addr_len, msg_received_count = 0;
+	int msg_received_count = 0;
 	struct sockaddr_in r_addr;
 	char *packet;
 	struct timeval tv_out;
@@ -125,10 +161,10 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *dest_addr, t_op
 		print_error("unknown host");
 		return ;
 	}
-	addr_len = sizeof(r_addr);
+	int addr_len = sizeof(r_addr);
 	printf("PING %s (%s): %d data bytes", dest_addr, dest_ip, opts->packet_size);
 	if (opts->verbose)
-		printf(", id %x = %d\n", getpid(), getpid());
+		printf(", id 0x%x = %d\n", getpid(), getpid());
 	else
 		printf("\n");
 	if (opts->timeout_ping_dead != 0)
@@ -143,10 +179,98 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *dest_addr, t_op
 		msg_count++;
 		packet = create_packet(msg_count - 1, opts->packet_size);
 		clock_gettime(CLOCK_MONOTONIC, &time_start);
-		if (sendto(socket_fd, packet, opts->packet_size + sizeof(struct icmphdr*), 0, (struct sockaddr *)ping_addr, sizeof(*ping_addr)) <= 0)
+		if (sendto(socket_fd, packet, opts->packet_size + sizeof(struct icmphdr), 0, (struct sockaddr *)ping_addr, sizeof(*ping_addr)) <= 0)
 			sent = 0;
-		char *recv_packet = (char *)malloc(0x10000);
-		if (recvfrom(socket_fd, recv_packet, 0x10000, 0, (struct sockaddr *)&r_addr, (socklen_t *)&addr_len) <= 0)
+
+		fd_set read_fds;
+		struct timeval timeout;
+		FD_ZERO(&read_fds);
+		FD_SET(socket_fd, &read_fds);
+		timeout.tv_sec = 1;
+		timeout.tv_usec = 0;
+
+		int select_result = select(socket_fd + 1, &read_fds, NULL, NULL, &timeout);
+		if (select_result > 0 && FD_ISSET(socket_fd, &read_fds))
+		{
+			char *recv_packet = (char *)malloc(0x10000);
+			size_t bytes_received = recvfrom(socket_fd, recv_packet, 0x10000, 0, (struct sockaddr *)&r_addr, (socklen_t *)&addr_len);
+			if (bytes_received > 0)
+			{
+				struct iphdr *ip = (struct iphdr *)recv_packet;
+				struct icmphdr *icmp = (struct icmphdr *)(recv_packet + (ip->ihl << 2));
+				ttl = ip->ttl;
+				int size = ntohs(ip->tot_len) - (ip->ihl << 2);
+				if (!do_ping || (opts->nb_packets == msg_received_count && opts->nb_packets != -1))
+				{
+					if (packet)
+						free(packet);
+					if (recv_packet)
+						free(recv_packet);
+					break;
+				}
+				if (sent)
+				{
+					struct icmphdr *icmp_from = (struct icmphdr *)(packet);
+					int packet_from_id = icmp_from->un.echo.id;
+					char *recv_ip = dns_lookup(inet_ntoa(r_addr.sin_addr), &r_addr);
+					if (recv_ip == NULL)
+						recv_ip = inet_ntoa(r_addr.sin_addr);
+					char *recv_hostname = reverse_dns_lookup(recv_ip);
+					if (recv_hostname == NULL)
+						recv_hostname = recv_ip;
+					long double rtt_msec = 0;
+					calculate_metrics(time_start, &sum_rtt_squared, &avg_rtt, &max_rtt, &min_rtt, &rtt_msec);
+					if (icmp->type == ICMP_ECHOREPLY && icmp->un.echo.id == packet_from_id)
+					{
+						if (opts->print_only_ip == 0)
+							printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.3Lf ms\n",  size, recv_hostname, recv_ip, (int)(msg_count - 1), ttl, rtt_msec);
+						else
+							printf("%d bytes from %s: icmp_seq=%d ttl=%d time=%.3Lf ms\n", size, recv_ip, (int)(msg_count - 1), ttl, rtt_msec);
+						msg_received_count++;
+					}
+					else if (icmp->type == ICMP_DEST_UNREACH)
+					{
+						if (opts->print_only_ip == 0)
+							printf("%d bytes from %s (%s): Destination Host Unreachable\n", size, recv_hostname, recv_ip);
+						else
+							printf("%d bytes from %s: Destination Host Unreachable\n", size, recv_ip);
+						if (opts->verbose)
+							print_dump_packet(recv_packet, packet);
+					}
+					else if (icmp->type == ICMP_TIME_EXCEEDED)
+					{
+						if (opts->print_only_ip == 0)
+							printf("%d bytes from %s (%s): Time to live exceeded\n", size, recv_hostname, recv_ip);
+						else
+							printf("%d bytes from %s: Time to live exceeded\n", size, recv_ip);
+					}
+					else if (icmp->type == NR_ICMP_UNREACH)
+					{
+						if (opts->print_only_ip == 0)
+							printf("%d bytes from %s (%s): Network Unreachable\n", size, recv_hostname, recv_ip);
+						else
+							printf("%d bytes from %s: Network Unreachable\n", size, recv_ip);
+					}
+					else
+					{
+						if (icmp->un.echo.id != icmp_from->un.echo.id || icmp->un.echo.sequence != icmp_from->un.echo.sequence)
+						{
+							free(packet);
+							free(recv_packet);
+							msg_count--;
+							continue;
+						}
+					}
+					if (recv_ip)
+						free(recv_ip);
+					if (recv_hostname != recv_ip)
+						free(recv_hostname);
+				}
+				usleep(1000000);
+			}
+			free(recv_packet);
+		}
+		else if (select_result == 0)
 		{
 			if (!do_ping)
 			{
@@ -155,85 +279,8 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *dest_addr, t_op
 				break;
 			}
 		}
-		else
-		{
-			struct iphdr *ip = (struct iphdr *)recv_packet;
-			struct icmphdr *icmp = (struct icmphdr *)(recv_packet + (ip->ihl << 2));
-			ttl = ip->ttl;
-			if (!do_ping || (opts->nb_packets == msg_received_count && opts->nb_packets != -1))
-			{
-				if (packet)
-					free(packet);
-				if (recv_packet)
-					free(recv_packet);
-				break;
-			}
-			if (sent)
-			{
-				struct icmphdr *icmp_from = (struct icmphdr *)(packet);
-				int packet_from_id = icmp_from->un.echo.id;
-				char *recv_ip = dns_lookup(inet_ntoa(r_addr.sin_addr), &r_addr);
-				if (recv_ip == NULL)
-					recv_ip = inet_ntoa(r_addr.sin_addr);
-				char *recv_hostname = reverse_dns_lookup(recv_ip);
-				if (recv_hostname == NULL)
-					recv_hostname = recv_ip;
-				long double rtt_msec = 0;
-				calculate_metrics(time_start, &sum_rtt_squared, &avg_rtt, &max_rtt, &min_rtt, &rtt_msec);
-				if (icmp->type == ICMP_ECHOREPLY && icmp->un.echo.id == packet_from_id)
-				{
-					if (opts->print_only_ip == 0)
-						printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.3Lf ms\n", opts->packet_size + 8, recv_hostname, recv_ip, (int)(msg_count - 1), ttl, rtt_msec);
-					else
-						printf("%d bytes from %s: icmp_seq=%d ttl=%d time=%.3Lf ms\n", opts->packet_size + 8, recv_ip, (int)(msg_count - 1), ttl, rtt_msec);
-					msg_received_count++;
-				}
-				else if (icmp->type == ICMP_DEST_UNREACH)
-				{
-					if (opts->print_only_ip == 0)
-						printf("From %s icmp_seq=%d Destination Host Unreachable\n", recv_hostname, (int)(msg_count - 1));
-					else
-						printf("From %s icmp_seq=%d Destination Host Unreachable\n", recv_ip, (int)(msg_count - 1));
-					if (opts->verbose)
-					{
-						// dump the packet
-					}
-				}
-				else if (icmp->type == ICMP_TIME_EXCEEDED)
-				{
-					if (opts->print_only_ip == 0)
-						printf("From %s icmp_seq=%d Time to live exceeded\n", recv_hostname, (int)(msg_count - 1));
-					else
-						printf("From %s icmp_seq=%d Time to live exceeded\n", recv_ip, (int)(msg_count - 1));
-				}
-				else if (icmp->type == NR_ICMP_UNREACH)
-				{
-					if (opts->print_only_ip == 0)
-						printf("From %s icmp_seq=%d Network Unreachable\n", recv_hostname, (int)(msg_count - 1));
-					else
-						printf("From %s icmp_seq=%d Network Unreachable\n", recv_ip, (int)(msg_count - 1));
-				}
-				else
-				{
-					if (icmp->un.echo.id != icmp_from->un.echo.id || icmp->un.echo.sequence != icmp_from->un.echo.sequence)
-					{
-						free(packet);
-						free(recv_packet);
-						msg_count--;
-						continue;
-					}
-				}
-				if (recv_ip)
-					free(recv_ip);
-				if (recv_hostname != recv_ip)
-					free(recv_hostname);
-			}
-			usleep(1000000);
-		}
 		free(packet);
-		free(recv_packet);
 		packet = NULL;
-		recv_packet = NULL;
 	}
 	free(dest_ip);
 	clock_gettime(CLOCK_MONOTONIC, &g_end);

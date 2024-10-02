@@ -13,6 +13,7 @@
 #include <signal.h>
 #include <sys/time.h>
 #include <netinet/ip_icmp.h>
+#include <netinet/ip.h>
 #include <time.h>
 typedef struct options
 {

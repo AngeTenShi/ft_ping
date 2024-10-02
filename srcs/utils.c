@@ -161,35 +161,3 @@ double sqrt(double x)
 		z -= (z * z - x) / (2 * z);
 	return z;
 }
-
-void parse_fdqn(char **dest_addr)
-{
-	// parse fully qualified domain name
-	// if it is a FQDN, remove the domain part https://www.google.com -> google.com https:://google.com -> google.com www.google.com -> google.com
-	int i = 0;
-	char *str = *dest_addr;
-	if (strlen(str) < 4)
-		return;
-	if (str[0] == 'w' && str[1] == 'w' && str[2] == 'w' && str[3] == '.')
-		i = 4;
-	else if (str[i] == 'h' && str[i + 1] == 't' && str[i + 2] == 't' && str[i + 3] == 'p' && str[i + 4] == 's' && str[i + 5] == ':' && str[i + 6] == '/' && str[i + 7] == '/')
-	{
-		if (strlen(str) < 8)
-			return;
-		if (str[i + 8] == 'w' && str[i + 9] == 'w' && str[i + 10] == 'w' && str[i + 11] == '.')
-			i += 12;
-		else
-			i += 8;
-	}
-	else if (str[i] == 'h' && str[i + 1] == 't' && str[i + 2] == 't' && str[i + 3] == 'p' && str[i + 4] == ':' && str[i + 5] == '/' && str[i + 6] == '/')
-	{
-		if (strlen(str) < 7)
-			return;
-		if (str[i + 7] == 'w' && str[i + 8] == 'w' && str[i + 9] == 'w' && str[i + 10] == '.')
-			i += 11;
-		else
-			i += 7;
-	}
-	*dest_addr = *dest_addr + i;
-
-}
