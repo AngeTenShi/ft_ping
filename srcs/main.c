@@ -92,7 +92,7 @@ void calculate_metrics(struct timespec time_start, double *sum_rtt_squared, doub
 	*avg_rtt += *rtt_msec;
 }
 
-void print_dump_packet(char *recv_packet)
+void print_dump_packet(char *recv_packet, char *packet)
 {
 	// Cast the packet to an IP header structure
 	const struct iphdr *ip = (struct iphdr *)recv_packet;
@@ -119,7 +119,7 @@ void print_dump_packet(char *recv_packet)
 		printf("%02x", *cp++);
 	printf("\n");
 
-	const struct icmphdr *icmp = (const struct icmphdr *)(recv_packet + sizeof(struct ip));
+	const struct icmphdr *icmp = (const struct icmphdr *)(packet);
     printf("ICMP: type %d, code %d, size %lu, id 0x%x, seq 0x%04x\n",
            icmp->type, icmp->code,
            ntohs(ip->tot_len) - hlen - sizeof(struct icmphdr),
@@ -233,7 +233,7 @@ void ft_ping(int socket_fd, struct sockaddr_in *ping_addr, char *dest_addr, t_op
 						else
 							printf("%d bytes from %s: Destination Host Unreachable\n", size, recv_ip);
 						if (opts->verbose)
-							print_dump_packet(recv_packet);
+							print_dump_packet(recv_packet, packet);
 					}
 					else if (icmp->type == ICMP_TIME_EXCEEDED)
 					{
